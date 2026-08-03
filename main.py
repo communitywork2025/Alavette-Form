@@ -11,6 +11,7 @@ Alavette Form V1.0 — 主入口
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -25,6 +26,10 @@ from src.services.console_output import (
 # 项目根目录加入 sys.path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+
+_STARTUP_READY_FILE_ENV = "ALAVETTE_STARTUP_READY_FILE"
+_PACKAGE_IMPORT_PROBE_FLAG = "--internal-package-import-probe"
+_UNINSTALL_CLEANUP_FLAG = "--internal-uninstall-clean-user-data"
 
 
 class _ConsoleSafeArgumentParser(argparse.ArgumentParser):
@@ -51,6 +56,21 @@ def _create_gui_exception_logger(log_path: Path):
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
     return logger
+
+
+def _publish_startup_ready_probe(
+    environment: dict[str, str] | None = None,
+) -> Path | None:
+    """Confirm to packaging QA that the main window constructed successfully."""
+
+    values = os.environ if environment is None else environment
+    destination = str(values.get(_STARTUP_READY_FILE_ENV) or "").strip()
+    if not destination:
+        return None
+    path = Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("ready\n", encoding="utf-8")
+    return path
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -184,6 +204,7 @@ def _start_gui(font_engine: str | None = None) -> int:
         win.show()
         app.processEvents()
         splash.finish_and_close()
+        _publish_startup_ready_probe()
 
     win.startup_status_changed.connect(splash.set_status)
     win.startup_ready.connect(_show_main_window)
@@ -225,6 +246,9 @@ def run_app(argv: list[str] | None = None) -> int:
     """Route startup to GUI or CLI based on the provided arguments."""
     configure_console_output()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    maintenance_result = _run_internal_maintenance_command(raw_argv)
+    if maintenance_result is not None:
+        return maintenance_result
     internal_result = _run_internal_office_child(raw_argv)
     if internal_result is not None:
         return internal_result
@@ -232,6 +256,43 @@ def run_app(argv: list[str] | None = None) -> int:
     if args.gui or not args.input:
         return _start_gui(args.font_engine)
     return _run_cli(args)
+
+
+def _run_internal_maintenance_command(argv: list[str]) -> int | None:
+    """Run release-owned internal commands before public argument parsing."""
+
+    if argv == [_PACKAGE_IMPORT_PROBE_FLAG]:
+        return _run_package_import_probe()
+
+    if argv != [_UNINSTALL_CLEANUP_FLAG]:
+        return None
+    from src.services.user_data_cleanup import clear_current_user_data
+
+    try:
+        result = clear_current_user_data()
+    except Exception:  # noqa: BLE001 - process boundary used by the uninstaller
+        return 1
+    return 0 if result.succeeded else 1
+
+
+def _run_package_import_probe() -> int:
+    """Verify frozen-only and lazy UI imports in the installed payload."""
+
+    from importlib import import_module
+
+    required_modules = (
+        "win32timezone",
+        "src.ui.panels.preferences_panel",
+        "src.assistant.ui.assistant_panel",
+        "src.ui.panels.workbench.batch_generation_detail",
+        "src.ui.panels.workbench.file_batch_execution_detail",
+    )
+    try:
+        for module_name in required_modules:
+            import_module(module_name)
+    except Exception:  # noqa: BLE001 - executable self-test process boundary
+        return 1
+    return 0
 
 
 def _run_internal_office_child(argv: list[str]) -> int | None:
