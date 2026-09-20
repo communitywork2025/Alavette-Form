@@ -124,13 +124,23 @@ jobs:
             Write-Error "Bundle EXE missing at $exe"
             exit 1
           }
-          Write-Host "Bundle contents:"
-          Get-ChildItem -Recurse "dist\Alavette-Form" -Depth 1 |
+          # PyInstaller onedir places data files under _MEIPASS, which at
+          # runtime is dist\Alavette-Form\_internal.  src/config/library
+          # code resolves Path(__file__).parents[2] to that _MEIPASS root,
+          # so the required data roots must live under _internal, not next
+          # to the EXE.
+          $internal = "dist\Alavette-Form\_internal"
+          if (-not (Test-Path $internal)) {
+            Write-Error "_internal directory missing at $internal"
+            exit 1
+          }
+          Write-Host "Bundle _internal contents:"
+          Get-ChildItem $internal -Depth 0 |
             Select-Object -First 30 |
             ForEach-Object { Write-Host "  $($_.FullName)" }
-          # Required data roots must be present alongside the bundle root.
+          # Required data roots must be present under _internal.
           foreach ($d in @("config_library", "defaults", "licenses", "src")) {
-            $p = "dist\Alavette-Form\$d"
+            $p = "$internal\$d"
             if (-not (Test-Path $p)) {
               Write-Error "Required bundle data missing: $p"
               exit 1
