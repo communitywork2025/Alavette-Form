@@ -56,9 +56,9 @@ permissions:
   contents: write   # required for softprops/action-gh-release on tag pushes
 
 env:
-  # PyInstaller honors SOURCE_DATE_EPOCH for deterministic bytecode timestamps;
-  # pinning to 0 keeps reruns of the same commit reproducible.
-  SOURCE_DATE_EPOCH: "0"
+  # NOTE: do NOT set SOURCE_DATE_EPOCH here. The ZIP format cannot represent
+  # timestamps before 1980-01-01; setting it to 0 (1970) breaks pip wheel
+  # installation, PyInstaller packaging, and the release zip step on Windows.
   PYTHONUNBUFFERED: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_INPUT: "1"
