@@ -153,12 +153,30 @@ jobs:
         run: |
           # main.py routes --internal-package-import-probe before parsing public
           # args; a zero exit confirms frozen-only imports load cleanly.
-          & "dist\Alavette-Form\Alavette-Form.exe" --internal-package-import-probe
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Frozen package probe failed (exit $LASTEXITCODE)"
+          # The EXE is built with console=False (GUI subsystem), so PowerShell
+          # does not capture its exit code via & or direct invocation.  Use
+          # Start-Process -Wait -PassThru -NoNewWindow -RedirectStandardError
+          # to run it headlessly and surface any stderr in the workflow log.
+          $exe = Resolve-Path "dist\Alavette-Form\Alavette-Form.exe"
+          $errFile = New-TemporaryFile
+          $proc = Start-Process -FilePath $exe `
+            -ArgumentList "--internal-package-import-probe" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardError $errFile
+          $code = $proc.ExitCode
+          if (Test-Path $errFile) {
+            $errText = Get-Content $errFile -Raw
+            if ($errText) {
+              Write-Host "--- probe stderr ---"
+              Write-Host $errText
+            }
+            Remove-Item $errFile -Force
+          }
+          if ($code -ne 0) {
+            Write-Error "Frozen package probe failed (exit $code)"
             exit 1
           }
-          Write-Host "Frozen package probe: OK"
+          Write-Host "Frozen package probe: OK (exit $code)"
 
       - name: Stage release archive
         shell: pwsh
