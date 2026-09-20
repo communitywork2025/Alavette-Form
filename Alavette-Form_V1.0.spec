@@ -59,7 +59,12 @@ datas.append((str(PROJECT_ROOT / "defaults"), "defaults"))
 #    root when frozen.
 datas.append((str(PROJECT_ROOT / "licenses"), "licenses"))
 
-# 5. Top-level legal documents required for source-derived redistribution.
+# 5. Built-in count profiles consumed by ``src/shared/engine/count_engine``.
+#    Resolved via ``Path(__file__).resolve().parents[3] / "count_profiles"``,
+#    which under the frozen bundle points at ``_internal/count_profiles``.
+datas.append((str(PROJECT_ROOT / "count_profiles"), "count_profiles"))
+
+# 6. Top-level legal documents required for source-derived redistribution.
 for legal_name in ("LICENSE", "THIRD_PARTY_NOTICES.md", "README.md"):
     legal_path = PROJECT_ROOT / legal_name
     if legal_path.is_file():

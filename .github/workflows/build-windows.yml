@@ -139,7 +139,7 @@ jobs:
             Select-Object -First 30 |
             ForEach-Object { Write-Host "  $($_.FullName)" }
           # Required data roots must be present under _internal.
-          foreach ($d in @("config_library", "defaults", "licenses", "src")) {
+          foreach ($d in @("config_library", "count_profiles", "defaults", "licenses", "src")) {
             $p = "$internal\$d"
             if (-not (Test-Path $p)) {
               Write-Error "Required bundle data missing: $p"
