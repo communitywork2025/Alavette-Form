@@ -1,0 +1,195 @@
+name: build-windows
+
+# Alavette Form V1.0 - Windows GUI release build.
+#
+# Builds the PyInstaller onedir GUI bundle on a Windows 10/11 runner and
+# uploads it as a workflow artifact.  Tag pushes (v1.x.x) additionally
+# publish a release archive to GitHub Releases.
+#
+# Inputs:
+#   - Workflow dispatch with optional `python-version` and `run-probe` choices.
+#   - Tag pushes matching `v1.*` trigger a release build.
+#
+# Outputs:
+#   - dist/Alavette-Form/            (onedir bundle)
+#   - Alavette-Form_V<ref>-win64.zip (release archive on tag pushes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python version (3.10 / 3.11 / 3.12)"
+        required: false
+        default: "3.12"
+        type: choice
+        options:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+      run-probe:
+        description: "Run the frozen package import probe after build"
+        required: false
+        default: true
+        type: boolean
+      clean-build:
+        description: "Remove build/ and dist/ before building"
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v1.*"
+  pull_request:
+    paths:
+      - "Alavette-Form_V1.0.spec"
+      - "build_release.bat"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/build-windows.yml"
+
+# Cancel superseded runs on the same ref so push/pull cycles do not queue up.
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # required for softprops/action-gh-release on tag pushes
+
+env:
+  # PyInstaller honors SOURCE_DATE_EPOCH for deterministic bytecode timestamps;
+  # pinning to 0 keeps reruns of the same commit reproducible.
+  SOURCE_DATE_EPOCH: "0"
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+jobs:
+  build:
+    name: Build Windows GUI bundle
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version || '3.12' }}
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Display toolchain
+        shell: pwsh
+        run: |
+          python --version
+          python -c "import platform; print('platform:', platform.platform())"
+
+      - name: Install runtime dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # pywin32 is conditional on Windows in requirements.txt; install it
+          # explicitly here so the frozen bundle has all COM bindings even if
+          # a future dependency change reshuffles the marker.
+          python -m pip install -r requirements.txt
+          python -m pip install "pyinstaller>=6.19.0"
+
+      - name: Verify source probes pass under the host interpreter
+        shell: pwsh
+        run: |
+          # Quick sanity check: the modules the spec marks as hidden imports
+          # must import cleanly on the build host.  Failure here usually means
+          # a dependency was missed in requirements.txt.
+          python -c "import win32timezone, win32cred, pythoncom, win32com.client, markdown_it, latex2mathml, pypdfium2, openpyxl; print('host probe: OK')"
+
+      - name: Run PyInstaller
+        shell: pwsh
+        run: |
+          # The spec already calls COLLECT (onedir layout).  --clean rebuilds
+          # the bundle from scratch; --noconfirm overwrites a previous dist/.
+          python -m PyInstaller --noconfirm --clean --log-level WARN Alavette-Form_V1.0.spec
+
+      - name: Verify bundle layout
+        shell: pwsh
+        run: |
+          $exe = "dist\Alavette-Form\Alavette-Form.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "Bundle EXE missing at $exe"
+            exit 1
+          }
+          Write-Host "Bundle contents:"
+          Get-ChildItem -Recurse "dist\Alavette-Form" -Depth 1 |
+            Select-Object -First 30 |
+            ForEach-Object { Write-Host "  $($_.FullName)" }
+          # Required data roots must be present alongside the bundle root.
+          foreach ($d in @("config_library", "defaults", "licenses", "src")) {
+            $p = "dist\Alavette-Form\$d"
+            if (-not (Test-Path $p)) {
+              Write-Error "Required bundle data missing: $p"
+              exit 1
+            }
+          }
+
+      - name: Run frozen package import probe
+        if: ${{ github.event_name != 'pull_request' || inputs.run-probe == true }}
+        shell: pwsh
+        run: |
+          # main.py routes --internal-package-import-probe before parsing public
+          # args; a zero exit confirms frozen-only imports load cleanly.
+          & "dist\Alavette-Form\Alavette-Form.exe" --internal-package-import-probe
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Frozen package probe failed (exit $LASTEXITCODE)"
+            exit 1
+          }
+          Write-Host "Frozen package probe: OK"
+
+      - name: Stage release archive
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -match '^refs/tags/v(.+)$') {
+            $matches[1]
+          } else {
+            "ci-$env:GITHUB_SHA".Substring(0, 12)
+          }
+          $archive = "Alavette-Form_V$version-win64.zip"
+          # Use .NET ZipFile to avoid 7z/Compress-Archive path quirks on the
+          # Windows runner.  Archive the *contents* of the bundle directory so
+          # unzipping yields Alavette-Form.exe at the top level.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path "dist\Alavette-Form").Path,
+            (Join-Path (Get-Location) $archive),
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false
+          )
+          Write-Host "Archive: $archive"
+          Get-Item $archive | Format-List Name, Length, FullName
+          "archive_name=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload bundle artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Alavette-Form-win64
+          path: |
+            Alavette-Form_V*-win64.zip
+            dist/Alavette-Form/*.exe
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Attach archive to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v1.')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.archive_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
